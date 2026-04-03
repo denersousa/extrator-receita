@@ -6,7 +6,6 @@ const https = require('node:https');
 const readline = require('node:readline');
 const dns = require('node:dns/promises');
 const { pipeline } = require('node:stream/promises');
-const { HttpsProxyAgent } = require('https-proxy-agent');
 const yauzl = require('yauzl');
 
 const ZIP_URL = 'https://dadosabertos.rfb.gov.br/CNPJ/Estabelecimentos0.zip';
@@ -29,14 +28,13 @@ const CONFIG = {
     backoffBaseMs: parsePositiveInt(process.env.DOWNLOAD_BACKOFF_BASE_MS, DEFAULT_BACKOFF_BASE_MS),
     backoffMaxMs: parsePositiveInt(process.env.DOWNLOAD_BACKOFF_MAX_MS, DEFAULT_BACKOFF_MAX_MS),
     precheckHead: parseBoolean(process.env.DOWNLOAD_PRECHECK_HEAD, PRECHECK_HEAD_DEFAULT),
-    proxyUrl: process.env.HTTPS_PROXY || process.env.HTTP_PROXY || '',
 };
 
-const HTTPS_AGENT = buildHttpsAgent(CONFIG.proxyUrl);
+const HTTPS_AGENT = new https.Agent({ keepAlive: true });
 
 async function main() {
     log(`Modo de execucao: ${CONFIG.executionMode}`);
-    log(`Configuracao ativa: timeout=${CONFIG.timeoutMs}ms, tentativas=${CONFIG.maxAttempts}, backoffBase=${CONFIG.backoffBaseMs}ms, backoffMax=${CONFIG.backoffMaxMs}ms, precheckHead=${CONFIG.precheckHead}, proxy=${CONFIG.proxyUrl ? 'habilitado' : 'desabilitado'}`);
+    log(`Configuracao ativa: timeout=${CONFIG.timeoutMs}ms, tentativas=${CONFIG.maxAttempts}, backoffBase=${CONFIG.backoffBaseMs}ms, backoffMax=${CONFIG.backoffMaxMs}ms, precheckHead=${CONFIG.precheckHead}`);
 
     if (CONFIG.executionMode === EXECUTION_MODE_DIAGNOSTIC) {
         await runDiagnosticMode();
@@ -461,14 +459,6 @@ function parseExecutionMode(argv, envModeValue) {
     }
 
     return EXECUTION_MODE_PROCESSING;
-}
-
-function buildHttpsAgent(proxyUrl) {
-    if (proxyUrl) {
-        return new HttpsProxyAgent(proxyUrl);
-    }
-
-    return new https.Agent({ keepAlive: true });
 }
 
 function parsePositiveInt(value, fallback) {
