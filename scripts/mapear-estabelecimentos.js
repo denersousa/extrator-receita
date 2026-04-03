@@ -1,34 +1,44 @@
-const fs = require('node:fs');
 const fsp = require('node:fs/promises');
 const path = require('node:path');
 const readline = require('node:readline');
 const yauzl = require('yauzl');
 
-const ZIP_PATH = './Estabelecimentos0.zip';
+const BASE_DIR = path.resolve(__dirname, '..');
+const ZIP_PATH = path.join('data', 'estabelecimentos', 'Estabelecimentos0.zip');
 
 async function main() {
-    const absoluteZipPath = path.resolve(process.cwd(), ZIP_PATH);
+    const absoluteZipPath = path.join(BASE_DIR, ZIP_PATH);
+    console.log(`[diagnostico] Processando arquivo: ${absoluteZipPath}`);
 
     await assertZipExists(absoluteZipPath);
 
+    console.log('Abrindo arquivo ZIP');
     const firstLine = await readFirstLineFromZip(absoluteZipPath);
+
     if (!firstLine) {
         throw new Error('A primeira linha do CSV esta vazia.');
     }
 
+    console.log('Lendo primeira linha');
     const columns = firstLine.split(';');
 
     console.log(`Total de colunas encontradas: ${columns.length}`);
+    console.log('');
+
     columns.forEach((value, index) => {
         console.log(`Coluna ${index}: ${value}`);
     });
+
+    console.log('Mapeamento concluido');
 }
 
 async function assertZipExists(zipPath) {
     const stat = await fsp.stat(zipPath).catch(() => null);
     if (!stat || !stat.isFile()) {
-        throw new Error(`Arquivo ZIP nao encontrado em: ${zipPath}`);
+        throw new Error(`Arquivo nao encontrado: ${zipPath}`);
     }
+
+    console.log(`[diagnostico] Arquivo encontrado: ${zipPath}`);
 }
 
 function readFirstLineFromZip(zipPath) {
@@ -39,11 +49,11 @@ function readFirstLineFromZip(zipPath) {
                 return;
             }
 
-            let resolved = false;
+            let done = false;
 
             const fail = (error) => {
-                if (resolved) return;
-                resolved = true;
+                if (done) return;
+                done = true;
                 zipFile.close();
                 reject(error);
             };
@@ -51,7 +61,6 @@ function readFirstLineFromZip(zipPath) {
             zipFile.readEntry();
 
             zipFile.on('entry', (entry) => {
-                // Ignora diretorios e segue para a proxima entrada do ZIP.
                 if (/\/$/.test(entry.fileName)) {
                     zipFile.readEntry();
                     return;
@@ -68,24 +77,19 @@ function readFirstLineFromZip(zipPath) {
                         crlfDelay: Infinity,
                     });
 
-                    let gotLine = false;
-
                     rl.on('line', (line) => {
-                        if (gotLine || resolved) return;
-                        gotLine = true;
-                        resolved = true;
+                        if (done) return;
+                        done = true;
 
                         rl.close();
                         readStream.destroy();
                         zipFile.close();
 
-                        // Remove BOM caso exista no inicio do arquivo.
                         resolve(line.replace(/^\uFEFF/, ''));
                     });
 
                     rl.once('close', () => {
-                        if (!gotLine && !resolved) {
-                            // Arquivo vazio: tenta a proxima entrada dentro do ZIP.
+                        if (!done) {
                             zipFile.readEntry();
                         }
                     });
@@ -96,8 +100,9 @@ function readFirstLineFromZip(zipPath) {
             });
 
             zipFile.once('end', () => {
-                if (!resolved) {
-                    fail(new Error('Nao foi possivel encontrar uma linha valida no ZIP.'));
+                if (!done) {
+                    done = true;
+                    reject(new Error('Nao foi possivel encontrar uma linha valida no ZIP.'));
                 }
             });
 

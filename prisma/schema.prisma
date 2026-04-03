@@ -1,0 +1,77 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Empresa {
+  id                       Int               @id @default(autoincrement())
+  cnpjBase                 String            @unique
+  razaoSocial              String?
+  naturezaJuridica         String?
+  qualificacaoResponsavel  String?
+  capitalSocial            Decimal?
+  porte                    String?
+  enteFederativo           String?
+
+  estabelecimentos         Estabelecimento[]
+
+  @@index([razaoSocial])
+  @@index([naturezaJuridica])
+}
+
+model Estabelecimento {
+  id                    Int       @id @default(autoincrement())
+
+  cnpjBase              String
+  cnpjOrdem             String
+  cnpjDv                String
+  cnpjCompleto          String    @unique
+
+  matrizFilial          String
+  nomeFantasia          String?
+
+  situacaoCadastral     String
+  dataSituacao          String?
+  motivoSituacao        String?
+
+  nomeCidadeExterior    String?
+  pais                  String?
+
+  dataInicioAtividade   String?
+
+  cnaePrincipal         String
+  cnaeSecundarios       String?
+
+  tipoLogradouro        String?
+  logradouro            String?
+  numero                String?
+  complemento           String?
+  bairro                String?
+  cep                   String?
+  uf                    String?
+  municipio             String?
+
+  ddd1                  String?
+  telefone1             String?
+  ddd2                  String?
+  telefone2             String?
+
+  dddFax                String?
+  fax                   String?
+
+  email                 String?
+
+  situacaoEspecial      String?
+  dataSituacaoEspecial  String?
+
+  empresa               Empresa   @relation(fields: [cnpjBase], references: [cnpjBase], onDelete: Restrict, onUpdate: Cascade)
+
+  @@index([cnpjBase])
+  @@index([cnaePrincipal])
+  @@index([uf])
+  @@index([municipio])
+}

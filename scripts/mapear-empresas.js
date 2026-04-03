@@ -1,13 +1,14 @@
-const fs = require('node:fs');
 const fsp = require('node:fs/promises');
 const path = require('node:path');
 const readline = require('node:readline');
 const yauzl = require('yauzl');
 
-const ZIP_PATH = './Empresas0.zip';
+const BASE_DIR = path.resolve(__dirname, '..');
+const ZIP_PATH = path.join('data', 'empresas', 'Empresas0.zip');
 
 async function main() {
-    const absoluteZipPath = path.resolve(process.cwd(), ZIP_PATH);
+    const absoluteZipPath = path.join(BASE_DIR, ZIP_PATH);
+    console.log(`[diagnostico] Processando arquivo: ${absoluteZipPath}`);
 
     await assertZipExists(absoluteZipPath);
 
@@ -25,8 +26,10 @@ async function main() {
 async function assertZipExists(zipPath) {
     const stat = await fsp.stat(zipPath).catch(() => null);
     if (!stat || !stat.isFile()) {
-        throw new Error(`Arquivo ZIP nao encontrado em: ${zipPath}`);
+        throw new Error(`Arquivo nao encontrado: ${zipPath}`);
     }
+
+    console.log(`[diagnostico] Arquivo encontrado: ${zipPath}`);
 }
 
 function processEmpresasFromZip(zipPath) {

@@ -5,15 +5,20 @@
   "description": "Ferramentas para ingestao e analise de arquivos CNPJ da Receita Federal",
   "type": "commonjs",
   "scripts": {
-    "start": "node mapear-colunas-estabelecimentos.js",
-    "mapear": "node mapear-colunas-estabelecimentos.js",
-    "mapear:estabelecimentos": "node mapear-colunas-estabelecimentos.js",
-    "pipeline": "node pipeline-cnpj.js"
+    "start": "node scripts/pipeline-cnpj.js",
+    "mapear": "node scripts/mapear-estabelecimentos.js",
+    "mapear:estabelecimentos": "node scripts/mapear-estabelecimentos.js",
+    "mapear:empresas": "node scripts/mapear-empresas.js",
+    "pipeline": "node scripts/pipeline-cnpj.js"
   },
   "engines": {
     "node": ">=18"
   },
   "dependencies": {
+    "@prisma/client": "^6.10.1",
     "yauzl": "^3.2.0"
+  },
+  "devDependencies": {
+    "prisma": "^6.10.1"
   }
 }
