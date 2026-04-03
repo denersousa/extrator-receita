@@ -7,7 +7,8 @@
   "scripts": {
     "start": "node mapear-colunas-estabelecimentos.js",
     "mapear": "node mapear-colunas-estabelecimentos.js",
-    "mapear:estabelecimentos": "node mapear-colunas-estabelecimentos.js"
+    "mapear:estabelecimentos": "node mapear-colunas-estabelecimentos.js",
+    "pipeline": "node pipeline-cnpj.js"
   },
   "engines": {
     "node": ">=18"
