@@ -7,9 +7,7 @@
   "scripts": {
     "start": "node mapear-colunas-estabelecimentos.js",
     "mapear": "node mapear-colunas-estabelecimentos.js",
-    "diagnostico": "node mapear-colunas-estabelecimentos.js --mode=diagnostic",
-    "mapear:estabelecimentos": "node mapear-colunas-estabelecimentos.js",
-    "mapear:diagnostico": "node mapear-colunas-estabelecimentos.js --mode=diagnostic"
+    "mapear:estabelecimentos": "node mapear-colunas-estabelecimentos.js"
   },
   "engines": {
     "node": ">=18"
