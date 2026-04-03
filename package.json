@@ -1,0 +1,21 @@
+{
+  "name": "extrator-receita",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Ferramentas para ingestao e analise de arquivos CNPJ da Receita Federal",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node mapear-colunas-estabelecimentos.js",
+    "mapear": "node mapear-colunas-estabelecimentos.js",
+    "diagnostico": "node mapear-colunas-estabelecimentos.js --mode=diagnostic",
+    "mapear:estabelecimentos": "node mapear-colunas-estabelecimentos.js",
+    "mapear:diagnostico": "node mapear-colunas-estabelecimentos.js --mode=diagnostic"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "https-proxy-agent": "^9.0.0",
+    "yauzl": "^3.2.0"
+  }
+}

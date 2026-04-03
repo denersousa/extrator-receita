@@ -1,0 +1,38 @@
+# Dependencias Node.js
+node_modules/
+
+# Arquivos temporarios de processamento
+*.zip
+*.tmp
+*.csv
+tmp/
+temp/
+
+# Logs
+*.log
+logs/
+
+# Variaveis de ambiente (nunca versionar segredos)
+.env
+.env.*
+!.env.example
+
+# Saidas e artefatos de build
+dist/
+build/
+out/
+
+# Cache e IDEs
+.cache/
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+
+# NPM debug
+npm-debug.log*
+yarn-error.log*
