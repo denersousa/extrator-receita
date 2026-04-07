@@ -1,0 +1,12 @@
+ALTER SYSTEM SET wal_buffers = '16MB';
+ALTER SYSTEM SET max_connections = 50;
+ALTER SYSTEM SET work_mem = '16MB';
+ALTER SYSTEM SET maintenance_work_mem = '256MB';
+ALTER SYSTEM SET max_wal_size = '4GB';
+ALTER SYSTEM SET min_wal_size = '1GB';
+ALTER SYSTEM SET checkpoint_timeout = '15min';
+ALTER SYSTEM SET checkpoint_completion_target = 0.9;
+ALTER SYSTEM SET effective_cache_size = '4GB';
+ALTER SYSTEM SET random_page_cost = 1.1;
+ALTER SYSTEM SET wal_compression = on;
+SELECT pg_reload_conf();
