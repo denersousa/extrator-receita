@@ -9,16 +9,29 @@
     "mapear": "node scripts/mapear-estabelecimentos.js",
     "mapear:estabelecimentos": "node scripts/mapear-estabelecimentos.js",
     "mapear:empresas": "node scripts/mapear-empresas.js",
-    "pipeline": "node scripts/pipeline-cnpj.js"
+    "pipeline": "node scripts/pipeline-cnpj.js",
+    "db:status": "node scripts/db-status-report.js",
+    "db:import:drop-indexes": "docker compose exec -T postgres psql -U postgres -d DealRadar -f scripts/sql/01-import-drop-secondary-indexes.sql",
+    "db:import:create-indexes": "docker compose exec -T postgres psql -U postgres -d DealRadar -f scripts/sql/02-import-create-secondary-indexes.sql",
+    "db:import:analyze": "docker compose exec -T postgres psql -U postgres -d DealRadar -f scripts/sql/03-import-analyze.sql",
+    "db:metrics": "docker compose exec -T postgres psql -U postgres -d DealRadar -c \"SELECT now() AS ts, checkpoints_timed, checkpoints_req, buffers_checkpoint, buffers_backend, buffers_alloc FROM pg_stat_bgwriter;\"",
+    "pipeline:pm2:start": "pm2 start ecosystem.config.cjs --only pipeline-cnpj",
+    "pipeline:pm2:logs": "pm2 logs pipeline-cnpj",
+    "pipeline:pm2:status": "pm2 status",
+    "pipeline:pm2:stop": "pm2 stop pipeline-cnpj",
+    "pipeline:pm2:delete": "pm2 delete pipeline-cnpj"
   },
   "engines": {
     "node": ">=18"
   },
   "dependencies": {
     "@prisma/client": "^6.10.1",
+    "pg": "^8.12.0",
+    "pg-copy-streams": "^7.0.0",
     "yauzl": "^3.2.0"
   },
   "devDependencies": {
+    "pm2": "^5.4.3",
     "prisma": "^6.10.1"
   }
 }

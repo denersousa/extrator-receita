@@ -1,10 +1,12 @@
 generator client {
   provider = "prisma-client-js"
+  previewFeatures = ["multiSchema"]
 }
 
 datasource db {
   provider = "postgresql"
   url      = env("DATABASE_URL")
+  schemas  = ["receita"]
 }
 
 model Empresa {
@@ -18,9 +20,10 @@ model Empresa {
   enteFederativo           String?
 
   estabelecimentos         Estabelecimento[]
-
   @@index([razaoSocial])
   @@index([naturezaJuridica])
+  @@map("empresa")
+  @@schema("receita")
 }
 
 model Estabelecimento {
@@ -67,6 +70,8 @@ model Estabelecimento {
 
   situacaoEspecial      String?
   dataSituacaoEspecial  String?
+  hashRegistro          String?
+  dataAtualizacaoReceita DateTime?
 
   empresa               Empresa   @relation(fields: [cnpjBase], references: [cnpjBase], onDelete: Restrict, onUpdate: Cascade)
 
@@ -74,4 +79,64 @@ model Estabelecimento {
   @@index([cnaePrincipal])
   @@index([uf])
   @@index([municipio])
+  @@map("estabelecimento")
+  @@schema("receita")
+}
+
+model ImportJob {
+  id             BigInt       @id @default(autoincrement())
+  status         ImportStatus @default(RUNNING)
+  startedAt      DateTime     @default(now())
+  endedAt        DateTime?
+  totalProcessed BigInt       @default(0)
+  totalInserted  BigInt       @default(0)
+  totalSkipped   BigInt       @default(0)
+  observacao     String?
+  files          ImportFile[]
+  errors         ImportError[]
+
+  @@map("import_job")
+  @@schema("receita")
+}
+
+model ImportFile {
+  id         BigInt       @id @default(autoincrement())
+  importJobId BigInt
+  phase      String
+  fileName   String
+  filePath   String?
+  startedAt  DateTime     @default(now())
+  endedAt    DateTime?
+  processed  BigInt       @default(0)
+  inserted   BigInt       @default(0)
+  skipped    BigInt       @default(0)
+  status     ImportStatus @default(RUNNING)
+  importJob  ImportJob    @relation(fields: [importJobId], references: [id], onDelete: Cascade)
+  errors     ImportError[]
+
+  @@map("import_file")
+  @@schema("receita")
+}
+
+model ImportError {
+  id           BigInt     @id @default(autoincrement())
+  importJobId  BigInt
+  importFileId BigInt?
+  phase        String?
+  lineNumber   BigInt?
+  errorCode    String?
+  message      String
+  payload      Json?
+  createdAt    DateTime   @default(now())
+  importJob    ImportJob  @relation(fields: [importJobId], references: [id], onDelete: Cascade)
+  importFile   ImportFile? @relation(fields: [importFileId], references: [id], onDelete: Cascade)
+
+  @@map("import_error")
+  @@schema("receita")
+}
+
+enum ImportStatus {
+  RUNNING
+  SUCCESS
+  FAILED
 }

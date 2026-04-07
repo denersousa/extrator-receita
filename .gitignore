@@ -11,6 +11,8 @@ temp/
 # Logs
 *.log
 logs/
+.pipeline-checkpoint.json
+.pipeline-status.json
 
 # Variaveis de ambiente (nunca versionar segredos)
 .env

@@ -1,0 +1,45 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: extrator-postgres
+    restart: unless-stopped
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: 123456
+      POSTGRES_DB: DealRadar
+      PGDATA: /var/lib/postgresql/data/pgdata
+      TZ: UTC
+      PGTZ: UTC
+    command:
+      - postgres
+      - -c
+      - config_file=/etc/postgresql/postgresql.conf
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./postgres/postgresql.conf:/etc/postgresql/postgresql.conf:ro
+      - ./postgres/init:/docker-entrypoint-initdb.d:ro
+    shm_size: "1gb"
+    stop_grace_period: 60s
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    mem_limit: 10g
+    cpus: 6
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d DealRadar"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 40s
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+volumes:
+  postgres_data:
+    driver: local
