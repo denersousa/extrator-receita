@@ -33,6 +33,8 @@ async function runPipeline() {
             lockTimeoutMs: config.dbImportLockTimeoutMs,
             statementTimeoutMs: config.dbImportStatementTimeoutMs,
         },
+        ensureEmpresaForEstabelecimento: config.ensureEmpresaForEstabelecimento,
+        estabelecimentoWriteMode: config.estabelecimentoWriteMode,
     });
 
     await writer.init();
@@ -200,9 +202,17 @@ async function runPhase({ phase, files, parser, writerFn, checkpoint, metrics, s
                 state,
                 checkpoint,
                 metrics,
+                processingBatchSize: config.processingBatchSize,
+                insertBatchSize: config.insertBatchSize,
                 initialBatchSize: config.initialBatchSize,
                 minBatchSize: config.minBatchSize,
                 maxBatchSize: config.maxBatchSize,
+                batchScaleDownMs: config.batchScaleDownMs,
+                batchScaleUpMs: config.batchScaleUpMs,
+                batchScaleDownFactor: config.batchScaleDownFactor,
+                batchScaleUpFactor: config.batchScaleUpFactor,
+                batchScaleDownStreak: config.batchScaleDownStreak,
+                batchScaleUpStreak: config.batchScaleUpStreak,
                 watchdog,
             });
 
@@ -262,114 +272,234 @@ async function processZipFile({
     state,
     checkpoint,
     metrics,
+    processingBatchSize,
+    insertBatchSize,
     initialBatchSize,
     minBatchSize,
     maxBatchSize,
+    batchScaleDownMs,
+    batchScaleUpMs,
+    batchScaleDownFactor,
+    batchScaleUpFactor,
+    batchScaleDownStreak,
+    batchScaleUpStreak,
     watchdog,
 }) {
-    let currentBatchSize = initialBatchSize;
+    const normalizedProcessingBatchSize = Number.isFinite(processingBatchSize) && processingBatchSize > 0
+        ? Math.floor(processingBatchSize)
+        : 2000;
+    const normalizedInsertBatchSize = Number.isFinite(insertBatchSize) && insertBatchSize > 0
+        ? Math.floor(insertBatchSize)
+        : initialBatchSize;
+
+    let currentBatchSize = normalizedInsertBatchSize;
     let lastCheckpointAt = 0;
+    const adaptiveState = {
+        slowStreak: 0,
+        fastStreak: 0,
+    };
 
     let lineNo = 0;
     let processed = 0;
     let inserted = 0;
     let skipped = 0;
 
-    let batchRows = [];
-    let batchRawLines = 0;
+    let currentProcessRows = [];
+    let currentProcessRawLines = 0;
+    let currentProcessEndLine = 0;
+    const pendingProcessBatches = [];
+    let pendingProcessedLines = 0;
 
     let lastLineHeartbeatAt = 0;
+    const maxInFlightWrites = Math.max(1, config.dbMaxConcurrentCopy);
+    const adaptiveBatchEnabled = Boolean(config.batchAdaptiveEnabled) && maxInFlightWrites === 1;
+    const pendingWrites = new Set();
+    const completedBatches = new Map();
+    let nextBatchId = 1;
+    let nextBatchToCommit = 1;
+    let completionChain = Promise.resolve();
 
-    async function flushBatch() {
-        if (batchRows.length === 0 && batchRawLines === 0) {
-            return;
-        }
+    async function commitCompletedBatches() {
+        while (completedBatches.has(nextBatchToCommit)) {
+            const batch = completedBatches.get(nextBatchToCommit);
+            completedBatches.delete(nextBatchToCommit);
 
-        const rowsToWrite = batchRows;
-        const processedInBatch = batchRawLines;
-        const endLine = lineNo;
+            processed += batch.processedInBatch;
+            inserted += batch.insertedInBatch;
+            skipped += batch.skippedInBatch;
 
-        batchRows = [];
-        batchRawLines = 0;
+            state.totalProcessed = (state.totalProcessed || 0) + batch.processedInBatch;
+            state.totalInserted = (state.totalInserted || 0) + batch.insertedInBatch;
+            state.totalSkipped = (state.totalSkipped || 0) + batch.skippedInBatch;
+            state.lineInFile = batch.endLine;
 
-        watchdog.beat(`flush:start:${phase}:${file.name}:line=${endLine}`);
-        const startMs = Date.now();
-        const insertedInBatch = await writerFn(rowsToWrite);
-        const batchMs = Date.now() - startMs;
-        const skippedInBatch = processedInBatch - rowsToWrite.length;
-        const throughput = Number((processedInBatch / Math.max(0.001, batchMs / 1000)).toFixed(2));
+            metrics.lastBatchMs = batch.batchMs;
+            metrics.lastBatchProcessed = batch.processedInBatch;
+            metrics.lastBatchInserted = batch.insertedInBatch;
+            metrics.lastBatchThroughput = batch.throughput;
 
-        processed += processedInBatch;
-        inserted += insertedInBatch;
-        skipped += skippedInBatch;
+            if ((processed - lastCheckpointAt) >= config.checkpointEveryLines) {
+                await checkpoint.save(state);
+                await metrics.write(statusPayload(state));
+                logProgress({
+                    phase,
+                    file,
+                    processed,
+                    inserted,
+                    skipped,
+                    currentBatchSize,
+                    batchMs: batch.batchMs,
+                    batchRows: batch.rowsToWrite,
+                    batchProcessed: batch.processedInBatch,
+                    batchInserted: batch.insertedInBatch,
+                    batchThroughput: batch.throughput,
+                });
+                lastCheckpointAt = processed;
+            }
 
-        state.totalProcessed = (state.totalProcessed || 0) + processedInBatch;
-        state.totalInserted = (state.totalInserted || 0) + insertedInBatch;
-        state.totalSkipped = (state.totalSkipped || 0) + skippedInBatch;
-        state.lineInFile = endLine;
-
-        metrics.lastBatchMs = batchMs;
-        metrics.lastBatchProcessed = processedInBatch;
-        metrics.lastBatchInserted = insertedInBatch;
-        metrics.lastBatchThroughput = throughput;
-
-        watchdog.beat(`flush:done:${phase}:${file.name}:line=${endLine}`);
-
-        adjustBatchSize({
-            result: {
-                batchMs,
-            },
-            currentBatchSizeRef: {
-                get value() { return currentBatchSize; },
-                set value(v) { currentBatchSize = v; },
-            },
-            minBatchSize,
-            maxBatchSize,
-        });
-
-        if ((processed - lastCheckpointAt) >= config.checkpointEveryLines) {
-            await checkpoint.save(state);
-            await metrics.write(statusPayload(state));
-            logProgress({
-                phase,
-                file,
-                processed,
-                inserted,
-                skipped,
-                currentBatchSize,
-                batchMs,
-                batchRows: rowsToWrite.length,
-                batchProcessed: processedInBatch,
-                batchInserted: insertedInBatch,
-                batchThroughput: throughput,
-            });
-            lastCheckpointAt = processed;
+            nextBatchToCommit += 1;
         }
     }
 
-    await streamZipLines(file.path, async (line) => {
-        lineNo += 1;
-        if (lineNo <= resumeLine) {
+    async function flushBatch(force = false) {
+        if (pendingProcessBatches.length === 0) {
             return;
         }
 
-        const parsed = parser(line);
-        if (parsed) {
-            batchRows.push(parsed);
-        }
-        batchRawLines += 1;
-
-        if ((lineNo - lastLineHeartbeatAt) >= 10000) {
-            lastLineHeartbeatAt = lineNo;
-            watchdog.beat(`read:${phase}:${file.name}:line=${lineNo}`);
+        if (!force && pendingProcessedLines < currentBatchSize) {
+            return;
         }
 
-        if (batchRows.length >= currentBatchSize) {
-            await flushBatch();
-        }
-    });
+        let rowsToWrite = [];
+        let processedInBatch = 0;
+        let endLine = 0;
 
-    await flushBatch();
+        while (pendingProcessBatches.length > 0 && (force || processedInBatch < currentBatchSize)) {
+            const batch = pendingProcessBatches.shift();
+            rowsToWrite = rowsToWrite.concat(batch.rows);
+            processedInBatch += batch.rawLines;
+            endLine = batch.endLine;
+            pendingProcessedLines -= batch.rawLines;
+        }
+
+        if (processedInBatch === 0) {
+            return;
+        }
+        const batchId = nextBatchId;
+        nextBatchId += 1;
+
+        const writePromise = (async () => {
+            watchdog.beat(`flush:start:${phase}:${file.name}:line=${endLine}`);
+            const startMs = Date.now();
+            const insertedInBatch = await writerFn(rowsToWrite);
+            const batchMs = Date.now() - startMs;
+            const skippedInBatch = processedInBatch - rowsToWrite.length;
+            const throughput = Number((processedInBatch / Math.max(0.001, batchMs / 1000)).toFixed(2));
+
+            watchdog.beat(`flush:done:${phase}:${file.name}:line=${endLine}`);
+
+            if (adaptiveBatchEnabled) {
+                adjustBatchSize({
+                    result: {
+                        batchMs,
+                    },
+                    currentBatchSizeRef: {
+                        get value() { return currentBatchSize; },
+                        set value(v) { currentBatchSize = v; },
+                    },
+                    minBatchSize,
+                    maxBatchSize,
+                    scaleDownMs: batchScaleDownMs,
+                    scaleUpMs: batchScaleUpMs,
+                    scaleDownFactor: batchScaleDownFactor,
+                    scaleUpFactor: batchScaleUpFactor,
+                    scaleDownStreak: batchScaleDownStreak,
+                    scaleUpStreak: batchScaleUpStreak,
+                    adaptiveState,
+                });
+            }
+
+            completionChain = completionChain.then(async () => {
+                completedBatches.set(batchId, {
+                    endLine,
+                    processedInBatch,
+                    insertedInBatch,
+                    skippedInBatch,
+                    batchMs,
+                    throughput,
+                    rowsToWrite: rowsToWrite.length,
+                });
+                await commitCompletedBatches();
+            });
+
+            await completionChain;
+        })();
+
+        pendingWrites.add(writePromise);
+        writePromise.finally(() => {
+            pendingWrites.delete(writePromise);
+        });
+
+        if (pendingWrites.size >= maxInFlightWrites) {
+            await Promise.race(pendingWrites);
+        }
+    }
+
+    function pushProcessedChunk() {
+        if (currentProcessRawLines === 0) {
+            return;
+        }
+
+        pendingProcessBatches.push({
+            rows: currentProcessRows,
+            rawLines: currentProcessRawLines,
+            endLine: currentProcessEndLine,
+        });
+        pendingProcessedLines += currentProcessRawLines;
+
+        currentProcessRows = [];
+        currentProcessRawLines = 0;
+        currentProcessEndLine = 0;
+    }
+
+    try {
+        await streamZipLines(file.path, async (line) => {
+            lineNo += 1;
+            if (lineNo <= resumeLine) {
+                return;
+            }
+
+            const parsed = parser(line);
+            if (parsed) {
+                currentProcessRows.push(parsed);
+            }
+            currentProcessRawLines += 1;
+            currentProcessEndLine = lineNo;
+
+            if ((lineNo - lastLineHeartbeatAt) >= 10000) {
+                lastLineHeartbeatAt = lineNo;
+                watchdog.beat(`read:${phase}:${file.name}:line=${lineNo}`);
+            }
+
+            if (currentProcessRawLines >= normalizedProcessingBatchSize) {
+                pushProcessedChunk();
+                await flushBatch();
+            }
+        });
+
+        pushProcessedChunk();
+        await flushBatch(true);
+
+        if (pendingWrites.size > 0) {
+            await Promise.all(pendingWrites);
+        }
+        await completionChain;
+    } catch (error) {
+        if (pendingWrites.size > 0) {
+            await Promise.allSettled(pendingWrites);
+        }
+        throw error;
+    }
 
     await checkpoint.save(state);
     await metrics.write(statusPayload(state));
@@ -377,16 +507,61 @@ async function processZipFile({
     return { processed, inserted, skipped };
 }
 
-function adjustBatchSize({ result, currentBatchSizeRef, minBatchSize, maxBatchSize }) {
+function adjustBatchSize({
+    result,
+    currentBatchSizeRef,
+    minBatchSize,
+    maxBatchSize,
+    scaleDownMs,
+    scaleUpMs,
+    scaleDownFactor,
+    scaleUpFactor,
+    scaleDownStreak,
+    scaleUpStreak,
+    adaptiveState,
+}) {
     const current = currentBatchSizeRef.value;
+    const downFactor = Number.isFinite(scaleDownFactor) && scaleDownFactor > 0 && scaleDownFactor < 1
+        ? scaleDownFactor
+        : 0.8;
+    const upFactor = Number.isFinite(scaleUpFactor) && scaleUpFactor > 1
+        ? scaleUpFactor
+        : 1.15;
+    const downMs = Number.isFinite(scaleDownMs) && scaleDownMs > 0
+        ? scaleDownMs
+        : 3500;
+    const upMs = Number.isFinite(scaleUpMs) && scaleUpMs > 0
+        ? scaleUpMs
+        : 1200;
+    const downStreakTarget = Number.isFinite(scaleDownStreak) && scaleDownStreak > 0
+        ? Math.floor(scaleDownStreak)
+        : 1;
+    const upStreakTarget = Number.isFinite(scaleUpStreak) && scaleUpStreak > 0
+        ? Math.floor(scaleUpStreak)
+        : 1;
 
-    if (result.batchMs > 3500 && current > minBatchSize) {
-        currentBatchSizeRef.value = Math.max(minBatchSize, Math.floor(current * 0.8));
+    if (result.batchMs > downMs) {
+        adaptiveState.slowStreak += 1;
+        adaptiveState.fastStreak = 0;
+    } else if (result.batchMs < upMs) {
+        adaptiveState.fastStreak += 1;
+        adaptiveState.slowStreak = 0;
+    } else {
+        adaptiveState.fastStreak = 0;
+        adaptiveState.slowStreak = 0;
+    }
+
+    if (adaptiveState.slowStreak >= downStreakTarget && current > minBatchSize) {
+        currentBatchSizeRef.value = Math.max(minBatchSize, Math.floor(current * downFactor));
+        adaptiveState.slowStreak = 0;
+        adaptiveState.fastStreak = 0;
         return;
     }
 
-    if (result.batchMs < 1200 && current < maxBatchSize) {
-        currentBatchSizeRef.value = Math.min(maxBatchSize, Math.floor(current * 1.15));
+    if (adaptiveState.fastStreak >= upStreakTarget && current < maxBatchSize) {
+        currentBatchSizeRef.value = Math.min(maxBatchSize, Math.floor(current * upFactor));
+        adaptiveState.slowStreak = 0;
+        adaptiveState.fastStreak = 0;
     }
 }
 

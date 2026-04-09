@@ -1,6 +1,5 @@
-const fs = require('node:fs');
 const fsp = require('node:fs/promises');
-const path = require('node:path');
+const { Readable } = require('node:stream');
 const { pipeline } = require('node:stream/promises');
 const { Pool } = require('pg');
 const { from: copyFrom } = require('pg-copy-streams');
@@ -60,6 +59,8 @@ class CopyWriter {
         poolMax = 8,
         readyMaxAttempts = 60,
         importSessionSettings = {},
+        ensureEmpresaForEstabelecimento = true,
+        estabelecimentoWriteMode = 'upsert',
     }) {
         this.pool = new Pool({
             connectionString,
@@ -85,6 +86,8 @@ class CopyWriter {
             lockTimeoutMs: Number(importSessionSettings.lockTimeoutMs || 0),
             statementTimeoutMs: Number(importSessionSettings.statementTimeoutMs || 0),
         };
+        this.ensureEmpresaForEstabelecimento = Boolean(ensureEmpresaForEstabelecimento);
+        this.estabelecimentoWriteMode = String(estabelecimentoWriteMode || 'upsert').toLowerCase();
 
         // Semáforo: limita COPYs simultâneos para não sobrecarregar o PostgreSQL
         this.copySemaphore = new Semaphore(maxConcurrentCopy);
@@ -275,17 +278,17 @@ class CopyWriter {
         client.on('error', onClientError);
 
         const tempTable = entity === 'empresa' ? 'tmp_empresa_ingest' : 'tmp_estabelecimento_ingest';
-        const csvPath = await this.writeCsvFile(entity, columns, rows);
 
         try {
             await client.query('BEGIN');
             await this.applyImportSessionSettings(client);
-            await client.query(`DROP TABLE IF EXISTS ${tempTable}`);
-            await client.query(`CREATE TEMP TABLE ${tempTable} (LIKE ${entity === 'empresa' ? 'receita.empresa' : 'receita.estabelecimento'} INCLUDING DEFAULTS)`);
+            const sourceTable = entity === 'empresa' ? 'receita.empresa' : 'receita.estabelecimento';
+            await client.query(`CREATE TEMP TABLE IF NOT EXISTS ${tempTable} (LIKE ${sourceTable} INCLUDING DEFAULTS)`);
+            await client.query(`TRUNCATE TABLE ${tempTable}`);
 
             const copyCommand = this.buildCopyCommand(tempTable, columns);
             const copyStream = client.query(copyFrom(copyCommand));
-            await pipeline(fs.createReadStream(csvPath), copyStream);
+            await pipeline(this.createCsvReadable(columns, rows), copyStream);
 
             if (clientStreamError) {
                 throw clientStreamError;
@@ -295,8 +298,7 @@ class CopyWriter {
             if (entity === 'empresa') {
                 insertedCount = await this.mergeEmpresa(client, tempTable);
             } else {
-                await this.ensureEmpresasForEstabelecimentos(client, tempTable);
-                insertedCount = await this.mergeEstabelecimento(client, tempTable);
+                insertedCount = await this.mergeEstabelecimentoWithFallback(client, tempTable);
             }
 
             await client.query('COMMIT');
@@ -307,7 +309,6 @@ class CopyWriter {
         } finally {
             client.removeListener('error', onClientError);
             client.release();
-            await fsp.unlink(csvPath).catch(() => null);
         }
     }
 
@@ -399,7 +400,40 @@ class CopyWriter {
         `);
     }
 
+    async mergeEstabelecimentoWithFallback(client, tempTable) {
+        if (this.ensureEmpresaForEstabelecimento) {
+            await this.ensureEmpresasForEstabelecimentos(client, tempTable);
+            return this.mergeEstabelecimento(client, tempTable);
+        }
+
+        const savepoint = 'sp_merge_estabelecimento';
+        await client.query(`SAVEPOINT ${savepoint}`);
+
+        try {
+            const inserted = await this.mergeEstabelecimento(client, tempTable);
+            await client.query(`RELEASE SAVEPOINT ${savepoint}`);
+            return inserted;
+        } catch (error) {
+            // Fallback only when FK with empresa is missing.
+            if (!this.isMissingEmpresaFk(error)) {
+                await client.query(`ROLLBACK TO SAVEPOINT ${savepoint}`).catch(() => null);
+                throw error;
+            }
+
+            await client.query(`ROLLBACK TO SAVEPOINT ${savepoint}`);
+            console.warn('[copy] FK em estabelecimento detectada. Executando ensure de empresa e repetindo merge deste batch.');
+            await this.ensureEmpresasForEstabelecimentos(client, tempTable);
+            const inserted = await this.mergeEstabelecimento(client, tempTable);
+            await client.query(`RELEASE SAVEPOINT ${savepoint}`);
+            return inserted;
+        }
+    }
+
     async mergeEstabelecimento(client, tempTable) {
+        if (this.estabelecimentoWriteMode === 'insert-only') {
+            return this.mergeEstabelecimentoInsertOnly(client, tempTable);
+        }
+
         const result = await client.query(`
             INSERT INTO receita.estabelecimento (
                 "cnpjBase", "cnpjOrdem", "cnpjDv", "cnpjCompleto", "matrizFilial", "nomeFantasia",
@@ -464,30 +498,45 @@ class CopyWriter {
         return result.rowCount;
     }
 
-    async writeCsvFile(entity, columns, rows) {
-        const filePath = path.join(this.tmpDir, `${entity}-${Date.now()}-${Math.random().toString(16).slice(2)}.csv`);
+    async mergeEstabelecimentoInsertOnly(client, tempTable) {
+        const result = await client.query(`
+            INSERT INTO receita.estabelecimento (
+                "cnpjBase", "cnpjOrdem", "cnpjDv", "cnpjCompleto", "matrizFilial", "nomeFantasia",
+                "situacaoCadastral", "dataSituacao", "motivoSituacao", "nomeCidadeExterior", "pais", "dataInicioAtividade",
+                "cnaePrincipal", "cnaeSecundarios", "tipoLogradouro", "logradouro", "numero", "complemento", "bairro", "cep",
+                "uf", "municipio", "ddd1", "telefone1", "ddd2", "telefone2", "dddFax", "fax", "email", "situacaoEspecial", "dataSituacaoEspecial",
+                "hashRegistro", "dataAtualizacaoReceita"
+            )
+            SELECT
+                "cnpjBase", "cnpjOrdem", "cnpjDv", "cnpjCompleto", "matrizFilial", "nomeFantasia",
+                "situacaoCadastral", "dataSituacao", "motivoSituacao", "nomeCidadeExterior", "pais", "dataInicioAtividade",
+                "cnaePrincipal", "cnaeSecundarios", "tipoLogradouro", "logradouro", "numero", "complemento", "bairro", "cep",
+                "uf", "municipio", "ddd1", "telefone1", "ddd2", "telefone2", "dddFax", "fax", "email", "situacaoEspecial", "dataSituacaoEspecial",
+                md5(concat_ws('|',
+                    coalesce("cnpjBase", ''), coalesce("cnpjOrdem", ''), coalesce("cnpjDv", ''), coalesce("cnpjCompleto", ''), coalesce("matrizFilial", ''),
+                    coalesce("nomeFantasia", ''), coalesce("situacaoCadastral", ''), coalesce("dataSituacao", ''), coalesce("motivoSituacao", ''),
+                    coalesce("nomeCidadeExterior", ''), coalesce("pais", ''), coalesce("dataInicioAtividade", ''), coalesce("cnaePrincipal", ''),
+                    coalesce("cnaeSecundarios", ''), coalesce("tipoLogradouro", ''), coalesce("logradouro", ''), coalesce("numero", ''),
+                    coalesce("complemento", ''), coalesce("bairro", ''), coalesce("cep", ''), coalesce("uf", ''), coalesce("municipio", ''),
+                    coalesce("ddd1", ''), coalesce("telefone1", ''), coalesce("ddd2", ''), coalesce("telefone2", ''), coalesce("dddFax", ''),
+                    coalesce("fax", ''), coalesce("email", ''), coalesce("situacaoEspecial", ''), coalesce("dataSituacaoEspecial", '')
+                )),
+                now()
+            FROM ${tempTable}
+            WHERE "cnpjCompleto" IS NOT NULL
+            ON CONFLICT ("cnpjCompleto") DO NOTHING
+        `);
 
-        const stream = fs.createWriteStream(filePath, { encoding: 'utf8' });
-        for (const row of rows) {
-            const values = columns.map((col) => toCsvValue(row[col]));
-            const ok = stream.write(`${values.join(';')}\n`);
-            if (!ok) {
-                await once(stream, 'drain');
+        return result.rowCount;
+    }
+
+    createCsvReadable(columns, rows) {
+        return Readable.from((function* buildCsvRows() {
+            for (const row of rows) {
+                const values = columns.map((col) => toCsvValue(row[col]));
+                yield `${values.join(';')}\n`;
             }
-        }
-
-        await new Promise((resolve, reject) => {
-            stream.end((error) => {
-                if (error) {
-                    reject(error);
-                    return;
-                }
-
-                resolve();
-            });
-        });
-
-        return filePath;
+        })());
     }
 
     isTransient(error) {
@@ -508,6 +557,13 @@ class CopyWriter {
             message.includes('timeout')
         );
     }
+
+    isMissingEmpresaFk(error) {
+        const message = String(error && error.message ? error.message : '').toLowerCase();
+        const code = String(error && error.code ? error.code : '').toUpperCase();
+
+        return code === '23503' && message.includes('estabelecimento_cnpjbase_fkey');
+    }
 }
 
 function toCsvValue(value) {
@@ -522,28 +578,6 @@ function toCsvValue(value) {
 
 function sleep(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function once(emitter, event) {
-    return new Promise((resolve, reject) => {
-        const onEvent = () => {
-            cleanup();
-            resolve();
-        };
-
-        const onError = (error) => {
-            cleanup();
-            reject(error);
-        };
-
-        const cleanup = () => {
-            emitter.removeListener(event, onEvent);
-            emitter.removeListener('error', onError);
-        };
-
-        emitter.on(event, onEvent);
-        emitter.on('error', onError);
-    });
 }
 
 module.exports = {
